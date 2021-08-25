@@ -373,7 +373,6 @@ cellStats(NO2.2019, mean)
 ## [1] 14.69914
 cellStats(NO2.2019, IQR)
 ## [1] 5.313713
-#str(MN2031_sub)
 
 zageotest <- zageo 
 
