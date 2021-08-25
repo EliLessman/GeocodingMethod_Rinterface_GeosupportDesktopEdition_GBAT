@@ -1,0 +1,416 @@
+---
+title: "Geocoding_RoughDraftRasterPart"
+author: "EliLessman"
+date: "8/25/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load libraries}
+library(haven)
+library(tidyverse)
+library(Hmisc)
+library(lubridate)
+library(foreign)
+library(raster)
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r loading gbat}
+library("tidyverse")
+library("ggplot2")
+library("readxl")
+library("dplyr")
+library("tidyr")
+library("ggfortify")
+library("DT")
+library("reshape2")
+library("knitr")
+library("lubridate")
+writeLines('PATH="${RTOOLS40_HOME}\\usr\\bin;${PATH}"', con = "~/.Renviron")
+Sys.which("make")
+## "C:\\rtools40\\usr\\bin\\make.exe"
+install.packages("jsonlite", type = "source")
+Sys.setenv(R_REMOTES_NO_ERRORS_FROM_WARNINGS="true")
+library(remotes)
+remotes::install_github("mfherman/gbatr", dependency = TRUE)
+```
+
+
+```{r gbat step after downloading gde gbat from nycplanning windows 64 bit and associated 64 bit file}
+
+gbat <- function(df, address, zip_boro, zip_boro_type = c("zip", "boro"),
+                 func = c("F1A", "F1E", "FAP"), geo_colnames = NULL,
+                 append = TRUE) {
+
+  # check that input is data frame
+  if (!inherits(df, "data.frame")) {
+    stop("You must supply a data frame as input to be geocoded", call. = FALSE)
+  }
+
+  # check that input data frame as at least one row
+  if (nrow(df) == 0) {
+    stop("Your input data frame doesn't have any rows", call. = FALSE)
+  }
+
+  # check that address and zip or boro column name supplied is in input df
+  input_cols <- c(address, zip_boro)
+  if (!all(input_cols %in% names(df))) {
+    stop("`address` and `zip_boro` column names not found in input data frame",
+         call. = FALSE)
+  }
+
+  # validate zip_boro_type argument
+  zip_boro_type <- match.arg(zip_boro_type)
+  zip_boro_type <- switch(zip_boro_type,
+                          zip = "zip_code",
+                          boro = "borough_code")
+
+  # validate func argument
+  func <- match.arg(func, several.ok = TRUE)
+
+  # validate column names to return from gbat
+  short_cuts <- list(
+    lot_centroid_xy      = c("F1A_Xcoordinate", "F1A_Ycoordinate"),
+    lot_centroid_latlon  = c("F1A_Latitude", "F1A_Longitude"),
+    block_face_xy        = c("F1E_XCoordinate", "F1E_YCoordinate"),
+    block_face_latlon    = c("F1E_Latitude", "F1E_Longitude"),
+    cd                   = "F1E_CommunityDistrict",
+    nta                  = c("F1E_NTA", "F1E_NTAName"),
+    census_tract         = c("F1E_2010CensusTractGEOID"),
+    census_block         = c("F1E_2010CensusBlockGEOID")
+    )
+
+  if (!all(geo_colnames %in% c(gbatr::gbat_fields$col_name, names(short_cuts)))) {
+    stop("Invalid column name selection. All names must match one of `gbat_fields$col_name` or one of the short cut names",
+         call. = FALSE)
+  }
+
+  # make a copy of input data because we may need to use the input data frame at the end
+  # TODO: will this slow things down too much? probably could refactor so this isn't necessary
+  to_geo <- df
+
+  # because we're helpful, convert borough codes, county names, or borough names
+  # to correct borough codes for GBAT
+  if (zip_boro_type == "borough_code") {
+    to_geo[[zip_boro]] <- tolower(to_geo[[zip_boro]])
+    to_geo[[zip_boro]] <- ifelse(to_geo[[zip_boro]] %in% c("1", "new york", "manhattan", "man", "ny"), "1",
+                          ifelse(to_geo[[zip_boro]] %in% c("2", "bronx", "bx"), "2",
+                          ifelse(to_geo[[zip_boro]] %in% c("3", "kings", "brooklyn", "bk"), "3",
+                          ifelse(to_geo[[zip_boro]] %in% c("4", "queens", "qn", "qns"), "4",
+                          ifelse(to_geo[[zip_boro]] %in% c("5", "richmond", "staten island", "si"), "5",
+                                 "0")))))
+  }
+
+  # add rownumber as id col for GBAT
+  to_geo$.id772018 <- seq.int(nrow(to_geo))
+
+  # run gbat!!!
+  # TODO: is it faster if we specify which columns to be returned in the cpp code?
+  # may be important if data frame becomes to big for memory
+  gbat_out <- GBAT(
+    to_geo,
+    id_col = ".id772018",
+    add_col = address,
+    third_col = zip_boro,
+    third_col_type = zip_boro_type
+    )
+
+  # some special handling in parsing the census tract and block vars
+  census_vars <- c("1990CensusTract", "2000CensusTract", "2010CensusTract",
+                   "2010CensusBlock", "2000CensusBlock")
+
+  # parse gbat output from single fixed width columns in one col per field
+  # TODO clean this up!!
+  sapply(1:sum(!is.na(gbatr::gbat_fields$field)), function(i)
+
+    if (gbatr::gbat_fields$field[i] %in% census_vars) {
+
+      gbat_out[[paste0(gbatr::gbat_fields$func[i], "_", gbatr::gbat_fields$field[i])]] <<-
+        gsub(
+          "\\s", "0",
+          substr(
+            gbat_out[[paste0(gbatr::gbat_fields$func[i],"_output")]],
+            gbatr::gbat_fields$start[i], gbatr::gbat_fields$end[i]
+            ),
+          perl = TRUE
+          )
+
+      } else {
+
+        gbat_out[[paste0(gbatr::gbat_fields$func[i], "_", gbatr::gbat_fields$field[i])]] <<-
+          gsub(
+            "(?<=[\\s])\\s*|^\\s+|\\s+$", "",
+            substr(gbat_out[[paste0(gbatr::gbat_fields$func[i],"_output")]],
+                   gbatr::gbat_fields$start[i], gbatr::gbat_fields$end[i]
+                   ),
+            perl = TRUE
+            )
+        }
+    )
+
+  # remove gbat output columns and id
+  gbat_out <- gbat_out[, !names(gbat_out) %in% c("F1A_output", "F1E_output", "FAP_output", ".id772018")]
+
+  # change all blanks coming out of geocoder to na
+  gbat_out[gbat_out == ""] <- NA
+
+  # TODO once we fix the census tract parsing above, this won't be necessary
+  gbat_out[gbat_out == "0000"] <- NA
+  gbat_out[gbat_out == "000000"] <- NA
+
+  # create new census cols with geoids that will match census files
+  # replace borough codes with borough geoids
+  gbat_out[["F1E_CensusCountyGEOID"]] <- ifelse(gbat_out[["F1E_CensusBoro"]] == 1, "36061",
+                                         ifelse(gbat_out[["F1E_CensusBoro"]] == 2, "36005",
+                                         ifelse(gbat_out[["F1E_CensusBoro"]] == 3, "36047",
+                                         ifelse(gbat_out[["F1E_CensusBoro"]] == 4, "36081",
+                                         ifelse(gbat_out[["F1E_CensusBoro"]] == 5, "36085",
+                                                NA)))))
+
+  # combine county and tract to create geoid
+  gbat_out[["F1E_1990CensusTractGEOID"]] <- ifelse(!is.na(gbat_out[["F1E_1990CensusTract"]]),
+                                                   paste0(gbat_out[["F1E_CensusCountyGEOID"]],
+                                                          gbat_out[["F1E_1990CensusTract"]]),
+                                                   NA)
+
+  gbat_out[["F1E_2000CensusTractGEOID"]] <- ifelse(!is.na(gbat_out[["F1E_2000CensusTract"]]),
+                                                   paste0(gbat_out[["F1E_CensusCountyGEOID"]],
+                                                          gbat_out[["F1E_2000CensusTract"]]),
+                                                   NA)
+
+  gbat_out[["F1E_2010CensusTractGEOID"]] <- ifelse(!is.na(gbat_out[["F1E_2010CensusTract"]]),
+                                                   paste0(gbat_out[["F1E_CensusCountyGEOID"]],
+                                                          gbat_out[["F1E_2010CensusTract"]]),
+                                                   NA)
+
+  # combine tract, block, block suffix to create geoid
+  gbat_out[["F1E_2000CensusBlockGEOID"]] <- ifelse(is.na(gbat_out[["F1E_2000CensusBlock"]]), NA,
+                                            ifelse(!is.na(gbat_out[["F1E_2000CensusBlockSuffix"]]),
+                                                   paste0(gbat_out[["F1E_2000CensusTractGEOID"]],
+                                                          gbat_out[["F1E_2000CensusBlock"]],
+                                                          gbat_out[["F1E_2000CensusBlockSuffix"]]),
+                                                   paste0(gbat_out[["F1E_2000CensusTractGEOID"]],
+                                                          gbat_out[["F1E_2000CensusBlock"]])))
+
+  gbat_out[["F1E_2010CensusBlockGEOID"]] <- ifelse(is.na(gbat_out[["F1E_2010CensusBlock"]]), NA,
+                                            ifelse(!is.na(gbat_out[["F1E_2010CensusBlockSuffix"]]),
+                                                   paste0(gbat_out[["F1E_2010CensusTractGEOID"]],
+                                                          gbat_out[["F1E_2010CensusBlock"]],
+                                                          gbat_out[["F1E_2010CensusBlockSuffix"]]),
+                                                   paste0(gbat_out[["F1E_2010CensusTractGEOID"]],
+                                                          gbat_out[["F1E_2010CensusBlock"]])))
+
+  # if func argument is not all 3, subset gbat output to cols that start with
+  # specified function
+  if (length(func < 3)) {
+    func <- paste(func, collapse = "|")
+    gbat_out <- gbat_out[, names(gbat_out) %in% c(input_cols, "F1E_GRC",
+                                                  names(gbat_out)[grepl(func, names(gbat_out))])]
+  }
+
+  # if colnames are specified subset gbat output to return those matching cols
+  if (!is.null(geo_colnames)) {
+
+    # first we'll check if any of the short cuts were used
+    # if so use the named list to extract the colnames and add to the geo_colnames vector
+    if (any(geo_colnames %in% names(short_cuts))) {
+      nms <- geo_colnames[geo_colnames %in% names(short_cuts)]
+      cols <- unlist(short_cuts[names(short_cuts) %in% nms], use.names = FALSE)
+      geo_colnames <- c(geo_colnames[!geo_colnames %in% names(short_cuts)], cols)
+    }
+    # and now we'll keep only address/zip/boro and all the geo_colnames specified
+    gbat_out <- gbat_out[, names(gbat_out) %in% c(input_cols, "F1E_GRC", geo_colnames)]
+  }
+
+  # should we append the geocoder output to the input data frame?
+  # if not just address, borough/zip and geo out cols are returned
+  # TODO: confirm that row order doesn't change with geocoder output or parsing
+  if (append) {
+    # move return code column to directly after input cols
+    gbat_out <- gbat_out[, c(input_cols, "F1E_GRC", names(gbat_out)[!names(gbat_out) %in% c(input_cols, "F1E_GRC")])]
+
+    gbat_out <- cbind(df, gbat_out[, !names(gbat_out) %in% input_cols, drop = FALSE])
+
+  } else {
+    # replace these two output columns from gbat with cols from input data
+    gbat_out[[address]] <- df[[address]]
+    gbat_out[[zip_boro]] <- df[[zip_boro]]
+
+    # move return code column to directly after input cols
+    gbat_out <- gbat_out[, c(input_cols, "F1E_GRC", names(gbat_out)[!names(gbat_out) %in% c(input_cols, "F1E_GRC")])]
+  }
+
+  # make it a tibble if the package is installed and input data was a tibble
+  if (requireNamespace("tibble", quietly = TRUE) && inherits(df, "tbl_df")) {
+    gbat_out <- tibble::as_tibble(gbat_out)
+  }
+
+  gbat_out
+
+}
+
+
+
+
+
+
+```
+
+
+```{r pressure, echo=FALSE}
+za <- tibble::tribble(
+  ~name,                 ~address,              ~borough,
+  "Roberta's",           "261 Moore Street",    "Brooklyn",
+  "L'Industrie",         "254 S 2nd Stret",     "Brooklyn",
+  "Emmy Squared",        "364 Grand Street",    "Brooklyn",
+  "Di Fara",             "1424 Avenue J",       "Brooklyn",
+  "L&B Spumoni Gardens", "2725 86th Street",    "Brooklyn",
+  "Totonno's",           "1524 Neptune Avenue", "Brooklyn"
+  )
+
+zageo <- gbatr::gbat(za,
+  address = "address",
+  zip_boro = "borough",
+  zip_boro_type = "boro",
+  geo_colnames = c("lot_centroid_latlon", "block_face_latlon"))
+```
+
+
+
+
+```{r bring raster years}
+#MN2031_sub <- projectRaster(MN2031_sub, crs = "+proj=longlat +datum=WGS84")
+##Bring raster years in
+library(rgdal)
+yrs <- seq(2017,2019,1)
+
+for (i in 9:11) {
+  rr <- raster(paste("/Users/elilessman/Downloads/delete/AnnAvg1_11_300mRaster/AnnAvg1_11_300mRaster/aa",i,"_pm300m/w001001x.adf", sep = ""))
+  rr <- projectRaster(rr, crs = "+proj=longlat +datum=WGS84")
+  assign(paste("PM", (i + 2008), sep = "."), rr)
+  rm(rr)
+}
+for (i in 9:11) {
+  rr <- raster(paste("/Users/elilessman/Downloads/delete/AnnAvg1_11_300mRaster/AnnAvg1_11_300mRaster/aa",i,"_no2300m/w001001x.adf", sep = ""))
+  rr <- projectRaster(rr, crs = "+proj=longlat +datum=WGS84")
+  assign(paste("NO2", (i + 2008), sep = "."), rr)
+  rm(rr)
+}
+
+```
+
+```{r pressure, echo=FALSE}
+plot(PM.2017, main = "Decimal Degree Grid of New York City PM2.5 NYCCAS Data 2017")
+ 
+plot(PM.2018, main = "Decimal Degree Grid of New York City PM2.5 NYCCAS Data 2018")
+ 
+plot(PM.2019, main = "Decimal Degree Grid of New York City PM2.5 NYCCAS Data 2019")
+ 
+cellStats(PM.2017, mean)
+## [1] 7.248985
+cellStats(PM.2017, IQR)
+## [1] 1.000154
+cellStats(PM.2018, mean)
+## [1] 6.886707
+cellStats(PM.2018, IQR)
+## [1] 0.925564
+cellStats(PM.2019, mean)
+## [1] 6.490195
+cellStats(PM.2019, IQR)
+## [1] 0.9397308
+NO2.2017
+## class      : RasterLayer 
+## dimensions : 170, 167, 28390  (nrow, ncol, ncell)
+## resolution : 0.00355, 0.0027  (x, y)
+## extent     : -74.27622, -73.68337, 40.47667, 40.93567  (xmin, xmax, ymin, ymax)
+## crs        : +proj=longlat +datum=WGS84 +no_defs 
+## source     : memory
+## names      : w001001x 
+## values     : 7.200341, 35.29633  (min, max)
+NO2.2018
+## class      : RasterLayer 
+## dimensions : 170, 167, 28390  (nrow, ncol, ncell)
+## resolution : 0.00355, 0.0027  (x, y)
+## extent     : -74.27622, -73.68337, 40.47667, 40.93567  (xmin, xmax, ymin, ymax)
+## crs        : +proj=longlat +datum=WGS84 +no_defs 
+## source     : memory
+## names      : w001001x 
+## values     : 5.417586, 33.90253  (min, max)
+NO2.2019
+## class      : RasterLayer 
+## dimensions : 170, 167, 28390  (nrow, ncol, ncell)
+## resolution : 0.00355, 0.0027  (x, y)
+## extent     : -74.27622, -73.68337, 40.47667, 40.93567  (xmin, xmax, ymin, ymax)
+## crs        : +proj=longlat +datum=WGS84 +no_defs 
+## source     : memory
+## names      : w001001x 
+## values     : 5.532682, 31.44075  (min, max)
+plot(NO2.2017, main = "Decimal Degree Grid of New York City NO2 NYCCAS Data 2017")
+ 
+plot(NO2.2018, main = "Decimal Degree Grid of New York City NO2 NYCCAS Data 2018")
+ 
+plot(NO2.2019, main = "Decimal Degree Grid of New York City NO2 NYCCAS Data 2019")
+ 
+cellStats(NO2.2017, mean)
+## [1] 16.84985
+cellStats(NO2.2017, IQR)
+## [1] 5.737934
+cellStats(NO2.2018, mean)
+## [1] 16.01636
+cellStats(NO2.2018, IQR)
+## [1] 5.761214
+cellStats(NO2.2019, mean)
+## [1] 14.69914
+cellStats(NO2.2019, IQR)
+## [1] 5.313713
+#str(MN2031_sub)
+
+zageotest <- zageo 
+
+zageotest <- zageotest %>% 
+  mutate(Longitude = c(paste("F1A_Longitdue"))) %>% 
+           mutate(Latitude = c(paste("F1A_Latitude")))
+
+glimpse(zageo)
+
+
+zageotest <- data.frame(zageo, matrix(NA, dim(zageo)[1], length(yrs)))
+
+glimpse(zageo)
+
+#$ Longitude  <chr> 
+#$ Latitude   <chr> 
+#$ X1         <lgl> NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA,…
+#$ X2         <lgl> NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA,…
+#$ X3         <lgl> NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA,…
+#asNumericMatrix(zageo)
+#data.matrix(zageo, rownames.force = NA)
+#Longitude <- as.numeric(unlist(zageo, "Longitude"))
+#Latitude <- as.numeric(unlist(zageo, "Latitude"))
+
+
+
+zageo <- zageo %>% mutate_if(is.character, as.numeric)
+
+glimpse(zageo) 
+
+for (y in 9:11) {
+  mm1 <- extract(get(paste("PM",(y + 2008),sep = ".")), SpatialPoints(zageo[c("Longitude", "Latitude")]), df = T)
+  zageo[,(y + 3)] <- mm1$w001001x
+  names(zageo)[(y + 3)] <- paste("PM",yrs[y],sep = ".")
+}
+
+glimpse(zageo)
+SpatialPoints(zageo[c("Longitude", "Latitude")])
+
+```
