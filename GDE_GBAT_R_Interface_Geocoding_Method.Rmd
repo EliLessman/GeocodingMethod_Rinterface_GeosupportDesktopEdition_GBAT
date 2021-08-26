@@ -281,7 +281,7 @@ zageo <- gbatr::gbat(za,
   address = "address",
   zip_boro = "borough",
   zip_boro_type = "boro",
-  geo_colnames = c("lot_centroid_latlon", "block_face_latlon"))
+  geo_colnames = c("lot_centroid_latlon", "block_face_latlon", "F1E_CommunityDistrict", "F1E_2010CensusTractGEOID", "F1E_2010CensusBlockGEOID"))
 
 #do your own example
 #import addresses
@@ -297,7 +297,7 @@ addressesgeo <- gbatr::gbat(addresses,
   address = "address",
   zip_boro = "borough",
   zip_boro_type = "boro",
-  geo_colnames = c("lot_centroid_latlon", "block_face_latlon"))
+  geo_colnames = c("lot_centroid_latlon", "block_face_latlon", "F1E_CommunityDistrict", "F1E_2010CensusTractGEOID", "F1E_2010CensusBlockGEOID"))
 
 
 #zageo %>%
