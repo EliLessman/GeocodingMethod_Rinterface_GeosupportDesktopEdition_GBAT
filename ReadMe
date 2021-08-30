@@ -1,6 +1,6 @@
 Sources:
 https://nycplanning.github.io/Geosupport-UPG/chapters/chapterX/chapterX/
 https://www1.nyc.gov/assets/planning/download/pdf/data-maps/open-data/upg.pdf
-credit to G culper and mf herman definitely!
+credit to G culper and mf herman wrote the gbat() code I did not!
 https://github.com/mfherman/gbatr/blob/master/README.md
-need windows 64 gde, info, r studio!
+need windows 64 gde, info, r studio
